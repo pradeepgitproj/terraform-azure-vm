@@ -84,72 +84,124 @@ resource_group_name = "rg-terraform-azure-vm"
 vm_name            = "demo-vm"
 admin_username     = "azureuser"
 ssh_public_key     = "<paste contents of id_rsa.pub here>"
-vm_size            = "Standard_B1s"
+# terraform-azure-vm
+
+This repository contains Terraform code to deploy a Windows virtual machine on Azure. The README below is generated from the repository's Terraform configuration and explains what is created, the variables, and exact steps to deploy.
+
+**What this code creates**
+- Azure Resource Group (default: `rg-prod-windows-vm`)
+- Virtual Network `vnet-prod` and Subnet `subnet-prod`
+- Network Security Group `nsg-prod` with an inbound rule allowing RDP (TCP/3389)
+- Public IP `pip-vm` (Static)
+- Network Interface `nic-vm` attached to the VM
+- Windows Virtual Machine `prod-windows-vm` (image: Windows Server 2022 Datacenter, size `Standard_B2s`)
+
+The project uses modules located under `modules/network` and `modules/windows-vm`.
+
+Important files
+- `provider.tf` — provider block and required provider version (~> 3.0 for `azurerm`).
+- `backend.tf` — Azure Storage backend configured for state (resource group `rg-tf-state`, storage account `tfterraformstate01`, container `tfstate`, key `windows-vm.tfstate`). Ensure these exist or remove/modify `backend.tf` if you prefer local state.
+- `main.tf` — top-level resources and module calls.
+- `variables.tf` — top-level variable defaults.
+- `modules/` — module implementations for network and windows-vm.
+
+Variables (defaults)
+- `location` — default: `East US`
+- `resource_group_name` — default: `rg-prod-windows-vm`
+- `admin_username` — default: `azureadmin`
+- `admin_password` — no default; marked `sensitive = true` (required)
+
+Notes about `admin_password`:
+- The VM module expects a Windows administrator password. Azure enforces password complexity rules — use a secure, complex password.
+- Do not store passwords in VCS. Use one of the methods below to provide it securely.
+
+Authentication to Azure
+- Interactive developer:
+
+```powershell
+az login
+az account set --subscription "<YOUR_SUBSCRIPTION_ID_OR_NAME>"
+```
+
+- Service Principal (CI/CD): create one and set the standard ARM environment variables (`ARM_SUBSCRIPTION_ID`, `ARM_CLIENT_ID`, `ARM_CLIENT_SECRET`, `ARM_TENANT_ID`).
+
+Providing variables (recommended approaches)
+- Use a `terraform.tfvars` file (add to `.gitignore`) with the `admin_password` set — keep this file secure.
+
+Example `terraform.tfvars` (do not commit):
+
+```hcl
+location = "East US"
+resource_group_name = "rg-prod-windows-vm"
+admin_username = "azureadmin"
+admin_password = "P@ssw0rd3xample!"
+```
+
+- Or export an environment variable for the password:
+
+PowerShell (temporary for session):
+
+```powershell
+#$ plain-text example (avoid in scripts or VCS)
+$env:TF_VAR_admin_password = "P@ssw0rd3xample!"
 ```
 
 Initialize, plan, apply
 
-PowerShell commands to deploy using interactive `az login` or SP environment vars:
+1) Initialize (this will configure backend and download providers):
 
 ```powershell
-# initialize terraform (installs provider plugins)
 terraform init
+```
 
-# create an execution plan and save it to file
+If `backend.tf` references the storage account and container that don't exist yet, create them first or remove/adjust `backend.tf`.
+
+2) Create plan and apply:
+
+```powershell
 terraform plan -out=tfplan -var-file="terraform.tfvars"
-
-# inspect the plan (optional)
-terraform show -json tfplan | Out-File -Encoding utf8 plan.json
-
-# apply the saved plan
 terraform apply "tfplan"
 ```
 
-If you prefer to pass variables directly without a `terraform.tfvars` file:
+Or pass variables inline (not recommended for secrets):
 
 ```powershell
-terraform plan -out=tfplan -var "resource_group_name=rg-terraform-azure-vm" -var "location=eastus" -var "admin_username=azureuser" -var "ssh_public_key=$(Get-Content $env:USERPROFILE\.ssh\id_rsa.pub -Raw)"
+terraform plan -out=tfplan -var "resource_group_name=rg-prod-windows-vm" -var "location=East US" -var "admin_username=azureadmin" -var "admin_password=P@ssw0rd3xample!"
 terraform apply "tfplan"
 ```
 
-Get the VM public IP (example using output)
-
-If your Terraform configuration defines an output named `public_ip`, run:
+Get the VM Public IP
+- The module creates a public IP resource named `pip-vm` in the target resource group. To retrieve the IP after apply using Azure CLI:
 
 ```powershell
-terraform output public_ip
+az network public-ip show -g <RESOURCE_GROUP_NAME> -n pip-vm --query ipAddress -o tsv
 ```
 
-Destroying the infrastructure
+RDP to the VM
+- Use the public IP returned above and connect with the configured `admin_username` and `admin_password` over RDP (port 3389).
 
-When you no longer need the VM, destroy the resources (this will remove everything managed by Terraform in this workspace):
+Security recommendations
+- The included NSG allows RDP from any public source (`source_address_prefix = "*"`). This is insecure for production. Limit access by specifying trusted IP ranges or use a jumpbox / VPN.
+- Consider enabling Azure Just-In-Time (JIT) VM access or an Azure Bastion host.
+- Store secrets in Azure Key Vault or use pipeline secret variables for CI/CD.
+
+Destroy resources
+
+When finished, destroy the deployed resources with:
 
 ```powershell
 terraform destroy -var-file="terraform.tfvars"
 ```
 
 Troubleshooting
+- If `terraform init` fails due to backend configuration, verify the storage account/container exist and permissions are correct.
+- If authentication fails, double-check `az login` status or ARM environment variables for a service principal.
+- For resource naming conflicts, check the defaults in `variables.tf` and adjust.
 
-- If Terraform cannot authenticate, verify `az login` session or SP env vars.
-- If a backend is configured and `terraform init` fails, ensure the storage account and container exist and that your identity has permissions to access them.
-- Check provider plugin versions in `terraform init` output.
+Next steps I can help with
+- Add an `outputs.tf` to export the VM public IP automatically.
+- Restrict NSG rules or add an Azure Bastion/Jumphost module.
+- Add a secure method to provide the `admin_password` (Key Vault or managed identity).
 
-Security notes
-
-- Do not commit `terraform.tfvars` if it contains secrets.
-- Prefer service principals with least privilege for automation.
-
-Next steps (optional enhancements)
-
-- Add managed identity or Key Vault integration for secrets.
-- Harden the VM (NSG rules, disable password auth, system updates).
-- Use modules to parameterize multiple environments (dev/staging/prod).
-
-If you want, I can:
-- add a sample `main.tf` and `variables.tf` here,
-- or scaffold a `backend.tf` and instructions to provision the storage account for remote state.
-
----
-
-Repository: `terraform-azure-vm`
+If you want, I can now add an `outputs.tf` and a short sample `terraform.tfvars.example` and a `.gitignore` entry to keep secrets out of the repo.
 
